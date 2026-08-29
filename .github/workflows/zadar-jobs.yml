@@ -2,12 +2,12 @@ name: Provjera HZZ oglasa (Zadar)
 
 on:
   schedule:
-    # 00:00 i 12:00 Europe/Zagreb
-    # ljeto (CEST, UTC+2): 22:00 i 10:00 UTC
-    # zima (CET,  UTC+1): 23:00 i 11:00 UTC
-    # Pokrećemo oba para — seen_jobs.json sprječava duplikate.
-    - cron: "0 10,22 * * *"
-    - cron: "0 11,23 * * *"
+    # 00:00, 08:00 i 16:00 Europe/Zagreb (svakih 8 sati)
+    # ljeto (CEST, UTC+2): 22:00, 06:00, 14:00 UTC
+    # zima (CET,  UTC+1): 23:00, 07:00, 15:00 UTC
+    # Pokrećemo oba seta — seen_jobs.json sprječava duplikate.
+    - cron: "0 6,14,22 * * *"
+    - cron: "0 7,15,23 * * *"
   workflow_dispatch:
     inputs:
       send_existing:

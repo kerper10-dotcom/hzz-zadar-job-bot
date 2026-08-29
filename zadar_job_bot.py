@@ -43,9 +43,9 @@ DEFAULT_TELEGRAM_CHAT_ID = ""  # npr. 123456789  (tvoj chat s botom)
 RSS_URL = "https://burzarada.hzz.hr/rss/rsszup20.xml"
 JOB_URL_TEMPLATE = "https://burzarada.hzz.hr/RadnoMjesto_Ispis.aspx?WebSifra={job_id}"
 
-# Lokalno vrijeme (Hrvatska). Bot se budi u 00:00 i 12:00.
+# Lokalno vrijeme (Hrvatska). Bot se budi u 00:00, 08:00 i 16:00 (svakih 8 sati).
 TIMEZONE_NAME = "Europe/Zagreb"
-CHECK_HOURS = (0, 12)
+CHECK_HOURS = (0, 8, 16)
 
 # Filtriraj SAMO ovaj grad (ne ostala mjesta u županiji: Petrčane, Bibinje, …).
 WORKPLACE_CITY = "ZADAR"
@@ -727,9 +727,9 @@ def run_check(
             unknown,
         )
         where = (
-            "GitHub Actions (dva puta dnevno, ~00:00 i ~12:00)"
+            "GitHub Actions (tri puta dnevno, ~00:00, ~08:00 i ~16:00)"
             if os.getenv("GITHUB_ACTIONS") == "true"
-            else "sljedeće provjere (00:00 i 12:00)"
+            else "sljedeće provjere (00:00, 08:00 i 16:00)"
         )
         msg = (
             "✅ <b>HZZ Zadar bot je pokrenut</b>\n\n"
@@ -760,7 +760,7 @@ def run_check(
 
 
 # =============================================================================
-# Raspored 00:00 / 12:00
+# Raspored 00:00 / 08:00 / 16:00
 # =============================================================================
 
 

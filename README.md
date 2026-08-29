@@ -10,7 +10,7 @@ Ostala mjesta u županiji (Petrčane, Bibinje, Poličnik, Biograd, …) se **ign
 |---|---|
 | Izvor | https://burzarada.hzz.hr/rss/rsszup20.xml |
 | Filter | `Mjesto rada = Zadar` (case-insensitive) |
-| Provjera | ~**00:00** i ~**12:00** (Europe/Zagreb), plus ručno |
+| Provjera | ~**00:00**, **08:00** i **16:00** (Europe/Zagreb), plus ručno |
 | Pamćenje | `seen_jobs.json` (WebSifra) — commita se natrag u repo |
 
 ---
@@ -44,7 +44,9 @@ Za **grupu**: dodaj bota u grupu, pošalji poruku, pa uzmi `chat.id` (često neg
 
 ## 2. GitHub Actions (preporučeno)
 
-GitHub runner svakih ~12 sati pokrene `python zadar_job_bot.py --once`, pošalje nove oglase na Telegram i spremi viđene ID-ove natrag u `seen_jobs.json`.
+GitHub runner **tri puta dnevno** (~svakih 8 sati) pokrene `python zadar_job_bot.py --once`, pošalje nove oglase na Telegram i spremi viđene ID-ove natrag u `seen_jobs.json`.
+
+Repo je **private**. Za ovaj bot to je dovoljno: jedan run traje sekunde, GitHub Free na private računu daje 2000 minuta/mjesec. Njuškalo bot je trebao biti public jer Playwright/browser jede minute. Ovaj samo čita RSS.
 
 ### 2.1 Secrets
 
@@ -68,13 +70,13 @@ Bez navodnika, bez razmaka.
 3. **Run workflow** → Run workflow.
    - Ostavi *Pošalji i trenutno aktivne oglase* **isključeno** (inače stigne 100+ poruka).
 4. U Telegramu treba stići: *HZZ Zadar bot je pokrenut*.
-5. Od sljedećeg crona (00:00 / 12:00) dolaze samo **novi** oglasi.
+5. Od sljedećeg crona (00:00 / 08:00 / 16:00) dolaze samo **novi** oglasi.
 
 Ako želiš odmah trenutne oglase za Zadar, u Run workflow uključi tu kvačicu.
 
 ### 2.3 Raspored
 
-Workflow se pali u **00:00 i 12:00 po Zagrebu**. GitHub cron je u UTC, pa su u YAML-u i ljetna i zimska vremena; isti oglas se ne šalje dvaput jer ID ide u `seen_jobs.json`.
+Workflow se pali u **00:00, 08:00 i 16:00 po Zagrebu**. GitHub cron je u UTC, pa su u YAML-u i ljetna i zimska vremena; isti oglas se ne šalje dvaput jer ID ide u `seen_jobs.json`.
 
 GitHub ponekad zakasni 5–15 minuta. To za oglase za posao nije problem.
 
@@ -124,7 +126,7 @@ python3 zadar_job_bot.py --once    # jedna provjera
 | `python3 zadar_job_bot.py --test` | Testna Telegram poruka |
 | `python3 zadar_job_bot.py --once --send-existing` | Pošalji i trenutno aktivne oglase |
 | `python3 zadar_job_bot.py --once --dry-run` | Bez Telegrama, samo log |
-| `python3 zadar_job_bot.py` | Lokalna petlja 00:00 / 12:00 (laptop mora biti budan) |
+| `python3 zadar_job_bot.py` | Lokalna petlja 00:00 / 08:00 / 16:00 (laptop mora biti budan) |
 
 macOS launchd / Linux cron / Windows Task Scheduler i dalje su u starijoj verziji uputa ispod, ako baš želiš laptop umjesto GitHuba.
 
@@ -145,7 +147,7 @@ launchctl load ~/Library/LaunchAgents/com.hzz.zadar-jobs.plist
 
 ```cron
 TZ=Europe/Zagreb
-0 0,12 * * * /home/TVOJE_IME/bots/hzz-zadar-job-bot/.venv/bin/python /home/TVOJE_IME/bots/hzz-zadar-job-bot/zadar_job_bot.py --once >> /home/TVOJE_IME/bots/hzz-zadar-job-bot/logs/cron.log 2>&1
+0 0,8,16 * * * /home/TVOJE_IME/bots/hzz-zadar-job-bot/.venv/bin/python /home/TVOJE_IME/bots/hzz-zadar-job-bot/zadar_job_bot.py --once >> /home/TVOJE_IME/bots/hzz-zadar-job-bot/logs/cron.log 2>&1
 ```
 
 ### Windows (Task Scheduler)
@@ -153,7 +155,7 @@ TZ=Europe/Zagreb
 Program: `.venv\Scripts\python.exe`  
 Arguments: `zadar_job_bot.py --once`  
 Start in: mapa projekta  
-Trigger: svakih 12 sati od 00:00.
+Trigger: 00:00, 08:00 i 16:00.
 
 </details>
 
