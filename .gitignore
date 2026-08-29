@@ -1,0 +1,8 @@
+.env
+seen_jobs.json.tmp
+logs/
+__pycache__/
+.venv/
+venv/
+*.pyc
+.DS_Store

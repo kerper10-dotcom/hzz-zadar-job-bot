@@ -1,0 +1,115 @@
+name: Provjera HZZ oglasa (Zadar)
+
+on:
+  schedule:
+    # 00:00 i 12:00 Europe/Zagreb
+    # ljeto (CEST, UTC+2): 22:00 i 10:00 UTC
+    # zima (CET,  UTC+1): 23:00 i 11:00 UTC
+    # Pokrećemo oba para — seen_jobs.json sprječava duplikate.
+    - cron: "0 10,22 * * *"
+    - cron: "0 11,23 * * *"
+  workflow_dispatch:
+    inputs:
+      send_existing:
+        description: "Pošalji i trenutno aktivne oglase za Zadar (može ih biti 100+)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: hzz-zadar-jobs
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUNBUFFERED: "1"
+      TIMEZONE: Europe/Zagreb
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Provjeri Telegram secrets
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::error::Dodaj TELEGRAM_BOT_TOKEN i TELEGRAM_CHAT_ID u Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Ovisnosti
+        run: pip install -r requirements.txt
+
+      - name: Provjeri oglase
+        run: |
+          extra=""
+          if [ "${{ github.event.inputs.send_existing }}" = "true" ]; then
+            extra="--send-existing"
+          fi
+          python zadar_job_bot.py --once $extra
+
+      - name: Spremi seen_jobs.json u repo
+        run: |
+          python3 <<'PY'
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          path = Path("seen_jobs.json")
+          if not path.exists():
+              print("seen_jobs.json ne postoji — ništa za commit.")
+              sys.exit(0)
+
+          new = json.loads(path.read_text(encoding="utf-8"))
+          new_ids = set(map(str, new.get("seen_ids") or []))
+
+          old_ids: set[str] = set()
+          try:
+              old_raw = subprocess.check_output(
+                  ["git", "show", "HEAD:seen_jobs.json"],
+                  text=True,
+                  stderr=subprocess.DEVNULL,
+              )
+              old = json.loads(old_raw)
+              old_ids = set(map(str, old.get("seen_ids") or []))
+          except (subprocess.CalledProcessError, json.JSONDecodeError):
+              pass
+
+          if new_ids == old_ids and old_ids:
+              print(f"seen_ids nepromijenjeni ({len(new_ids)}). Skip commit.")
+              sys.exit(0)
+
+          subprocess.check_call(["git", "config", "user.name", "github-actions[bot]"])
+          subprocess.check_call(
+              ["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"]
+          )
+          subprocess.check_call(["git", "add", "seen_jobs.json"])
+          subprocess.check_call(["git", "commit", "-m", "chore: update seen_jobs.json"])
+          subprocess.check_call(["git", "push"])
+          print(f"Commitan seen_jobs.json ({len(new_ids)} ID-ova).")
+          PY
+
+      - name: Telegram ako run padne
+        if: failure()
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "Secrets nisu postavljeni, nema Telegram alarma."
+            exit 0
+          fi
+          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=⚠️ HZZ Zadar bot: GitHub Actions run nije uspio. Otvori Actions tab u repou." \
+            --data-urlencode "disable_web_page_preview=true" \
+            || true
