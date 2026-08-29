@@ -2,10 +2,11 @@
 """
 HZZ Zadar Job Bot
 =================
-Prati službeni RSS feed Burze rada HZZ-a za Zadarsku županiju i šalje
-Telegram obavijest za svaki NOVI oglas čije je mjesto rada Zadar.
+Prati Burzu rada HZZ-a (HTML pretraga + RSS dopuna) za Zadarsku županiju
+i šalje Telegram obavijest za svaki NOVI oglas čije je mjesto rada Zadar.
 
-RSS: https://burzarada.hzz.hr/rss/rsszup20.xml
+HTML: https://burzarada.hzz.hr/Posloprimac_RadnaMjesta.aspx
+RSS:  https://burzarada.hzz.hr/rss/rsszup20.xml
 """
 
 from __future__ import annotations
@@ -41,7 +42,11 @@ DEFAULT_TELEGRAM_BOT_TOKEN = ""  # npr. 123456789:AA-xxxx  (od @BotFather)
 DEFAULT_TELEGRAM_CHAT_ID = ""  # npr. 123456789  (tvoj chat s botom)
 
 RSS_URL = "https://burzarada.hzz.hr/rss/rsszup20.xml"
+SEARCH_URL = "https://burzarada.hzz.hr/Posloprimac_RadnaMjesta.aspx"
 JOB_URL_TEMPLATE = "https://burzarada.hzz.hr/RadnoMjesto_Ispis.aspx?WebSifra={job_id}"
+# Napredna pretraga: Zadarska županija (isti ID kao rsszup20.xml).
+ZUPANIJA_ZADARSKA = "20"
+LISTING_PAGE_SIZE = "75"
 
 # Lokalno vrijeme (Hrvatska). Bot se budi u 00:00, 08:00 i 16:00 (svakih 8 sati).
 TIMEZONE_NAME = "Europe/Zagreb"
@@ -432,6 +437,222 @@ def fetch_jobs_from_rss(session: requests.Session) -> list[Job]:
 
 
 # =============================================================================
+# HTML pretraga (isti izvor kao stranica „Pronađeno oglasa“)
+# RSS često odreže opis pa fali „Mjesto rada“ — zato je broj 126 bio prenizak.
+# Grid na Burzi rada prikaže najviše ~300 redova; ostatak se dopuni iz RSS-a.
+# =============================================================================
+
+LISTING_JOB_RE = re.compile(
+    r"class=\"TitleLink\"\s+href='RadnoMjesto_Ispis\.aspx\?WebSifra=(\d+)'"
+    r"[\s\S]*?>([^<]+)</a>"
+    r"[\s\S]*?MjeNazivLabel[^>]*>([^<]+)</span>"
+    r"[\s\S]*?PosNazivLabel[^>]*>([^<]*)</span>"
+    r"[\s\S]*?RadMjeRokPrijaveLabel[^>]*>([^<]*)</span>",
+    re.IGNORECASE,
+)
+PAGER_RE = re.compile(
+    r'title="Idi na stranicu (\d+)" href="javascript:__doPostBack\(&#39;([^&]+)&#39;,&#39;([^&]*)&#39;\)"',
+    re.IGNORECASE,
+)
+
+
+def _form_fields(page: str) -> dict[str, str]:
+    data: dict[str, str] = {}
+    for match in re.finditer(r"<input\b([^>]*)>", page, flags=re.I):
+        tag = match.group(1)
+        name_m = re.search(r'\bname="([^"]*)"', tag)
+        if not name_m:
+            continue
+        name = html.unescape(name_m.group(1))
+        type_m = re.search(r'\btype="([^"]*)"', tag, flags=re.I)
+        field_type = (type_m.group(1).lower() if type_m else "text")
+        if field_type in {"submit", "button", "image"}:
+            continue
+        value_m = re.search(r'\bvalue="([^"]*)"', tag)
+        value = html.unescape(value_m.group(1)) if value_m else ""
+        if field_type == "radio":
+            if "checked" in tag.lower():
+                data[name] = value
+            continue
+        if field_type == "checkbox":
+            if "checked" in tag.lower():
+                data[name] = value or "on"
+            continue
+        data[name] = value
+    for match in re.finditer(r"<select\b([^>]*)>(.*?)</select>", page, flags=re.I | re.S):
+        name_m = re.search(r'\bname="([^"]*)"', match.group(1))
+        if not name_m:
+            continue
+        name = html.unescape(name_m.group(1))
+        selected = re.search(
+            r'<option[^>]*selected[^>]*value="([^"]*)"', match.group(2), flags=re.I
+        ) or re.search(r'<option[^>]*value="([^"]*)"', match.group(2), flags=re.I)
+        data[name] = html.unescape(selected.group(1)) if selected else ""
+    return data
+
+
+def _asp_post(
+    session: requests.Session,
+    page: str,
+    event_target: str,
+    extra: dict[str, str] | None = None,
+    event_arg: str = "",
+) -> str:
+    data = _form_fields(page)
+    data["__EVENTTARGET"] = event_target
+    data["__EVENTARGUMENT"] = event_arg
+    if extra:
+        data.update(extra)
+    response = session.post(
+        SEARCH_URL,
+        data=data,
+        timeout=REQUEST_TIMEOUT,
+        headers={"Origin": "https://burzarada.hzz.hr", "Referer": SEARCH_URL},
+        allow_redirects=True,
+    )
+    response.raise_for_status()
+    response.encoding = response.apparent_encoding or "utf-8"
+    return response.text
+
+
+def _parse_listing_jobs(html: str) -> list[Job]:
+    jobs: list[Job] = []
+    seen: set[str] = set()
+    for match in LISTING_JOB_RE.finditer(html):
+        job_id = match.group(1)
+        if job_id in seen:
+            continue
+        seen.add(job_id)
+        jobs.append(
+            Job(
+                job_id=job_id,
+                url=JOB_URL_TEMPLATE.format(job_id=job_id),
+                title=clean_text(match.group(2)),
+                workplace=clean_text(match.group(3)),
+                employer=clean_text(match.group(4)),
+                deadline=clean_text(match.group(5)),
+            )
+        )
+    return jobs
+
+
+def fetch_jobs_from_website(session: requests.Session) -> tuple[list[Job], int | None]:
+    """Vrati oglase Zadarske županije s HTML tražilice i službeni broj 'Pronađeno oglasa'."""
+    log.info("Dohvaćam HTML pretragu Zadarske županije...")
+    last_error: Exception | None = None
+    for attempt in range(1, RSS_RETRIES + 1):
+        try:
+            landing = session.get(SEARCH_URL, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+            landing.raise_for_status()
+            landing.encoding = landing.apparent_encoding or "utf-8"
+            page = landing.text
+            page = _asp_post(session, page, "ctl00$MainContent$lnkNapredno")
+            page = _asp_post(
+                session,
+                page,
+                "ctl00$MainContent$btnPretrazivanje",
+                {"ctl00$MainContent$ddlZupanija": ZUPANIJA_ZADARSKA},
+            )
+            if "lblResults" not in page:
+                raise requests.RequestException("Nema rezultata pretrage (lblResults).")
+            page = _asp_post(
+                session,
+                page,
+                "ctl00$MainContent$ddlPageSize",
+                {"ctl00$MainContent$ddlPageSize": LISTING_PAGE_SIZE},
+            )
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            log.warning("HTML pretraga nije uspjela (%s/%s): %s", attempt, RSS_RETRIES, exc)
+            if attempt < RSS_RETRIES:
+                time.sleep(2 * attempt)
+    else:
+        raise last_error or RuntimeError("HTML pretraga nije uspjela")
+
+    label_m = re.search(r'id="ctl00_MainContent_lblResults"[^>]*>([^<]+)', page)
+    label = clean_text(label_m.group(1)) if label_m else ""
+    reported = None
+    num_m = re.search(r"(\d+)", label.replace(".", "").replace(",", ""))
+    if num_m:
+        reported = int(num_m.group(1))
+    log.info("Burza rada: %s", label or "(nema lblResults)")
+
+    all_jobs: dict[str, Job] = {}
+    visited_pages: set[int] = set()
+    for _ in range(20):
+        active_m = re.search(r'<li class=active><a title="Idi na stranicu (\d+)"', page)
+        current = int(active_m.group(1)) if active_m else 1
+        for job in _parse_listing_jobs(page):
+            all_jobs[job.job_id] = job
+        visited_pages.add(current)
+        pages = [
+            (int(num), html.unescape(target), html.unescape(arg))
+            for num, target, arg in PAGER_RE.findall(page)
+        ]
+        nxt = next(((n, t, a) for n, t, a in pages if n not in visited_pages), None)
+        log.debug("HTML stranica %s: ukupno %s oglasa", current, len(all_jobs))
+        if not nxt:
+            break
+        page = _asp_post(session, page, nxt[1], event_arg=nxt[2])
+
+    log.info(
+        "HTML lista: %s oglasa (službeni broj %s). Grid često prikaže najviše 300.",
+        len(all_jobs),
+        reported if reported is not None else "?",
+    )
+    return list(all_jobs.values()), reported
+
+
+def merge_job(primary: Job, extra: Job) -> Job:
+    if not primary.title and extra.title:
+        primary.title = extra.title
+    if not primary.workplace and extra.workplace:
+        primary.workplace = extra.workplace
+    if not primary.employer and extra.employer:
+        primary.employer = extra.employer
+    if not primary.deadline and extra.deadline:
+        primary.deadline = extra.deadline
+    if not primary.category and extra.category:
+        primary.category = extra.category
+    if not primary.description and extra.description:
+        primary.description = extra.description
+    return primary
+
+
+def fetch_all_jobs(session: requests.Session) -> list[Job]:
+    """HTML pretraga (naslov/poslodavac/rok) + RSS ID-ovi koji nisu u gridu (limit 300)."""
+    web_jobs: list[Job] = []
+    reported = None
+    try:
+        web_jobs, reported = fetch_jobs_from_website(session)
+    except Exception:
+        log.exception("HTML pretraga nije uspjela, nastavljam sa RSS-om.")
+
+    rss_jobs: list[Job] = []
+    try:
+        rss_jobs = fetch_jobs_from_rss(session)
+    except Exception:
+        if not web_jobs:
+            raise
+        log.exception("RSS nije uspio; koristim samo HTML listu.")
+
+    by_id: dict[str, Job] = {job.job_id: job for job in web_jobs}
+    extra_rss = 0
+    for job in rss_jobs:
+        if job.job_id in by_id:
+            by_id[job.job_id] = merge_job(by_id[job.job_id], job)
+        else:
+            by_id[job.job_id] = job
+            extra_rss += 1
+    if extra_rss:
+        log.info("RSS dopunio %s oglasa kojih nema u HTML gridu.", extra_rss)
+    if reported is not None:
+        log.info("Zadarska županija ukupno (službeno): %s, spoji HTML+RSS: %s", reported, len(by_id))
+    return list(by_id.values())
+
+
+# =============================================================================
 # Detalji oglasa (naslov + poslodavac; RSS često nema ni jedno ni drugo)
 # =============================================================================
 
@@ -636,14 +857,14 @@ def run_check(
         )
 
     try:
-        jobs = fetch_jobs_from_rss(session)
+        jobs = fetch_all_jobs(session)
     except Exception:
-        log.exception("Ne mogu dohvatiti ili parsirati RSS. Provjera prekinuta.")
+        log.exception("Ne mogu dohvatiti oglase (HTML/RSS). Provjera prekinuta.")
         return stats
 
     stats["feed"] = len(jobs)
     if not jobs:
-        log.warning("RSS je prazan — nema oglasa za obradu.")
+        log.warning("Nema oglasa za obradu.")
         state["last_check"] = datetime.now().isoformat(timespec="seconds")
         if not dry_run:
             save_seen(state)
@@ -721,9 +942,10 @@ def run_check(
         zadar_in_feed = sum(1 for j in jobs if is_zadar_workplace(j.workplace))
         unknown = sum(1 for j in jobs if not j.workplace)
         log.info(
-            "Inicijalno spremljeno %s ID-ova. U feedu vidljivo Zadar=%s, bez mjesta (odrezan RSS)=%s.",
+            "Inicijalno spremljeno %s ID-ova. Grad Zadar=%s, ostala mjesta županije=%s, bez mjesta=%s.",
             stats["seeded"],
             zadar_in_feed,
+            stats["seeded"] - zadar_in_feed - unknown,
             unknown,
         )
         where = (
@@ -734,8 +956,9 @@ def run_check(
         msg = (
             "✅ <b>HZZ Zadar bot je pokrenut</b>\n\n"
             f"Pratim nove oglase za mjesto rada <b>Zadar</b>.\n"
-            f"U trenutnom feedu: {stats['feed']} oglasa županije, "
-            f"od toga {zadar_in_feed} jasno označenih za Zadar.\n\n"
+            f"U Zadarskoj županiji: {stats['feed']} oglasa, "
+            f"od toga <b>{zadar_in_feed}</b> s mjestom rada Zadar "
+            f"(Petrčane, Bibinje, Silba… se ne šalju).\n\n"
             f"Postojeći oglasi nisu poslani. Od {where} "
             "dobivat ćeš samo NOVE oglase."
         )
@@ -878,7 +1101,8 @@ def main(argv: list[str] | None = None) -> int:
 
     log.info("=== HZZ Zadar Job Bot ===")
     log.info("Mapa: %s", BASE_DIR)
-    log.info("RSS: %s", RSS_URL)
+    log.info("HTML: %s", SEARCH_URL)
+    log.info("RSS:  %s", RSS_URL)
 
     session = make_session()
 

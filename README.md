@@ -8,7 +8,7 @@ Ostala mjesta u županiji (Petrčane, Bibinje, Poličnik, Biograd, …) se **ign
 
 | | |
 |---|---|
-| Izvor | https://burzarada.hzz.hr/rss/rsszup20.xml |
+| Izvor | HTML pretraga Burze rada (Zadarska županija) + RSS dopuna |
 | Filter | `Mjesto rada = Zadar` (case-insensitive) |
 | Provjera | ~**00:00**, **08:00** i **16:00** (Europe/Zagreb), plus ručno |
 | Pamćenje | `seen_jobs.json` (WebSifra) — commita se natrag u repo |
@@ -163,11 +163,11 @@ Trigger: 00:00, 08:00 i 16:00.
 
 ## 5. Kako radi
 
-1. Preuzme RSS Zadarske županije (`rsszup20.xml`).
-2. Dekodira XML kao `iso-8859-2`.
-3. Iz linka izvuče `WebSifra` (jedinstveni ID).
-4. Ako mjesto rada nije Zadar → preskoči.
-5. Ako je Zadar ili je RSS odrezan → otvori stranicu oglasa (naslov, poslodavac, rok).
+1. Otvori istu HTML pretragu kao na Burzi rada (županija Zadarska).
+2. Prođe sve stranice rezultata (naslov, mjesto, poslodavac, rok).
+3. RSS županije dopuni oglase koje HTML grid ne prikaže (limit ~300).
+4. Ako mjesto rada nije **Zadar** (Petrčane, Bibinje, Silba…) → preskoči.
+5. Ako fali naslov/poslodavac → otvori stranicu oglasa.
 6. Ako je ID nov → Telegram, pa ID u `seen_jobs.json`.
 7. Na GitHubu, ako se lista ID-ova promijenila, Actions napravi commit.
 
