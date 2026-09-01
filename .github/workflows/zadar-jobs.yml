@@ -108,8 +108,12 @@ jobs:
             echo "Secrets nisu postavljeni, nema Telegram alarma."
             exit 0
           fi
-          curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=⚠️ HZZ Zadar bot: GitHub Actions run nije uspio. Otvori Actions tab u repou." \
-            --data-urlencode "disable_web_page_preview=true" \
-            || true
+          IFS=',; ' read -ra CHATS <<< "$TELEGRAM_CHAT_ID"
+          for chat in "${CHATS[@]}"; do
+            [ -z "$chat" ] && continue
+            curl -fsS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${chat}" \
+              --data-urlencode "text=⚠️ HZZ Zadar bot: GitHub Actions run nije uspio. Otvori Actions tab u repou." \
+              --data-urlencode "disable_web_page_preview=true" \
+              || true
+          done

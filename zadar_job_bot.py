@@ -87,6 +87,13 @@ TELEGRAM_CHAT_ID = (
 )
 TIMEZONE_NAME = os.getenv("TIMEZONE", TIMEZONE_NAME).strip() or "Europe/Zagreb"
 
+
+def telegram_chat_ids() -> list[str]:
+    """Jedan ili više chat ID-ova, odvojeni zarezom ili razmakom."""
+    raw = TELEGRAM_CHAT_ID.replace(";", ",")
+    ids = [part.strip() for part in raw.replace(" ", ",").split(",") if part.strip()]
+    return ids
+
 # =============================================================================
 # Logging
 # =============================================================================
@@ -756,10 +763,12 @@ def require_telegram_config() -> None:
             "Kopiraj .env.example u .env i upiši token od @BotFather.\n"
             "Upute su u README.md."
         )
-    if not TELEGRAM_CHAT_ID or TELEGRAM_CHAT_ID in {"123456789", "tvoj_chat_id"}:
+    ids = telegram_chat_ids()
+    if not ids or ids == ["123456789"] or ids == ["tvoj_chat_id"]:
         raise SystemExit(
             "Nedostaje TELEGRAM_CHAT_ID.\n"
-            "Upute kako ga dobiti su u README.md."
+            "Upute kako ga dobiti su u README.md.\n"
+            "Više osoba: TELEGRAM_CHAT_ID=111,222"
         )
 
 
@@ -783,15 +792,12 @@ def format_job_message(job: Job) -> str:
     return "\n".join(lines)
 
 
-def send_telegram(session: requests.Session, text: str, *, dry_run: bool = False) -> bool:
-    if dry_run:
-        log.info("[dry-run] Telegram poruka:\n%s", text)
-        return True
-
-    require_telegram_config()
+def _send_telegram_one(
+    session: requests.Session, chat_id: str, text: str
+) -> bool:
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
@@ -806,7 +812,7 @@ def send_telegram(session: requests.Session, text: str, *, dry_run: bool = False
             except ValueError:
                 data = {}
             if response.status_code == 400:
-                log.error("Telegram 400: %s", data or response.text)
+                log.error("Telegram 400 (chat %s): %s", chat_id, data or response.text)
                 return False
             if response.status_code == 429:
                 retry_after = int((data.get("parameters") or {}).get("retry_after") or 5)
@@ -819,11 +825,30 @@ def send_telegram(session: requests.Session, text: str, *, dry_run: bool = False
             return True
         except requests.RequestException as exc:
             last_error = exc
-            log.warning("Telegram slanje nije uspjelo (%s/%s): %s", i, TELEGRAM_RETRIES, exc)
+            log.warning(
+                "Telegram slanje na %s nije uspjelo (%s/%s): %s",
+                chat_id,
+                i,
+                TELEGRAM_RETRIES,
+                exc,
+            )
             if i < TELEGRAM_RETRIES:
                 time.sleep(2 * i)
-    log.error("Telegram poruka nije poslana: %s", last_error)
+    log.error("Telegram poruka nije poslana na %s: %s", chat_id, last_error)
     return False
+
+
+def send_telegram(session: requests.Session, text: str, *, dry_run: bool = False) -> bool:
+    if dry_run:
+        log.info("[dry-run] Telegram poruka:\n%s", text)
+        return True
+
+    require_telegram_config()
+    ok_all = True
+    for chat_id in telegram_chat_ids():
+        if not _send_telegram_one(session, chat_id, text):
+            ok_all = False
+    return ok_all
 
 
 # =============================================================================
